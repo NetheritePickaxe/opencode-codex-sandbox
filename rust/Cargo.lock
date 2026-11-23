@@ -224,7 +224,6 @@ dependencies = [
  "lazy_static",
  "libc",
  "log",
- "nix",
  "portable-pty",
  "pretty_assertions",
  "shared_library",
