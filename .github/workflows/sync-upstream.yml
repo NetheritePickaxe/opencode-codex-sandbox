@@ -1,0 +1,135 @@
+name: sync-upstream
+
+# Tracks openai/codex rust-v* releases: re-vendors the Windows sandbox crate
+# closure into rust/ (gitignored, rebuilt each run), builds and tests on
+# Windows, and opens a PR bumping rust/UPSTREAM_VERSION. Patch bumps may
+# auto-merge; minor/major need review.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream rust-v* tag to sync (defaults to latest release)"
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve upstream tag
+        id: tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag=$(gh api repos/openai/codex/releases/latest --jq .tag_name)
+          fi
+          case "$tag" in rust-v*) ;; *) echo "unexpected tag: $tag" >&2; exit 1;; esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#rust-v}" >> "$GITHUB_OUTPUT"
+
+      - name: Sparse-checkout upstream crate closure
+        shell: bash
+        run: |
+          git clone --filter=blob:none --no-checkout --depth 1 \
+            --branch "${{ steps.tag.outputs.tag }}" \
+            https://github.com/openai/codex.git upstream
+          cd upstream
+          git sparse-checkout init --cone
+          git sparse-checkout set \
+            codex-rs/windows-sandbox-rs \
+            codex-rs/protocol \
+            codex-rs/utils/pty \
+            codex-rs/utils/absolute-path \
+            codex-rs/utils/path-uri \
+            codex-rs/utils/process \
+            codex-rs/utils/string \
+            codex-rs/utils/redacted-string \
+            codex-rs/utils/cargo-bin
+          # cone mode always includes root files; ensure the workspace manifest.
+          git checkout
+          test -f codex-rs/Cargo.toml
+
+      - name: Regenerate vendored workspace
+        shell: bash
+        run: |
+          prev=$(cat rust/UPSTREAM_VERSION 2>/dev/null || echo "")
+          echo "prev=$prev" >> "$GITHUB_OUTPUT"
+          node scripts/sync-rust.ts upstream/codex-rs
+          printf '%s\n' "${{ steps.tag.outputs.version }}" > rust/UPSTREAM_VERSION
+        id: sync
+
+      - name: Build launcher (release)
+        working-directory: rust
+        run: cargo build --release -p codex-sandbox-launcher
+
+      - name: Test vendored crates
+        working-directory: rust
+        shell: bash
+        run: |
+          cargo test -p codex-protocol --lib
+          # unified_exec::tests::* are end-to-end exec tests needing the installed
+          # elevated setup service, which the standalone launcher does not ship;
+          # that path is exercised by the live sandbox smoke test below instead.
+          cargo test -p codex-windows-sandbox --lib -- --skip unified_exec::tests::
+
+      - name: Plugin unit tests
+        run: npm ci && npm test
+
+      - name: Live sandbox smoke test
+        run: npm run live:windows
+
+      - name: Open pull request
+        uses: peter-evans/create-pull-request@v6
+        id: cpr
+        with:
+          branch: sync/upstream-${{ steps.tag.outputs.version }}
+          title: "sync: codex sandbox ${{ steps.tag.outputs.tag }}"
+          commit-message: "sync: re-vendor codex sandbox from ${{ steps.tag.outputs.tag }}"
+          body: |
+            Bumps the vendored baseline to upstream `${{ steps.tag.outputs.tag }}`.
+
+            `rust/vendor/` is generated (gitignored) and rebuilt on every CI run,
+            so this PR carries the new `rust/UPSTREAM_VERSION` baseline (plus any
+            `sync-rust.ts` shim fixes if upstream moved anchors) — the build and
+            lib tests below verify the shim still generates and compiles.
+          labels: upstream-sync
+          delete-branch: true
+
+      - name: Auto-merge patch bumps
+        if: steps.cpr.outputs.pull-request-number
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.cpr.outputs.pull-request-number }}
+          PREV: ${{ steps.sync.outputs.prev }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          # Only auto-merge a patch bump over the previously synced version;
+          # minor/major bumps (or a first sync) are left for human review.
+          echo "prev=$PREV upstream=$VERSION"
+          IFS=. read -r cM cm cp <<< "$PREV"
+          IFS=. read -r uM um up <<< "$VERSION"
+          if [ -n "$PREV" ] && [ "$cM" = "$uM" ] && [ "$cm" = "$um" ] && [ "$up" -gt "$cp" ] 2>/dev/null; then
+            gh pr merge "$PR" --squash --auto || echo "auto-merge unavailable; PR left open for review"
+          else
+            echo "non-patch bump; leaving PR for human review"
+          fi

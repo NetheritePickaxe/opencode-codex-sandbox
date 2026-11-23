@@ -1,0 +1,8 @@
+[package]
+name = "codex-sandbox-launcher"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+codex-windows-sandbox = { path = "../vendor/codex-windows-sandbox" }

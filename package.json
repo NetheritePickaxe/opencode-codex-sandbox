@@ -1,0 +1,37 @@
+{
+  "name": "opencode-codex-sandbox",
+  "version": "0.1.0",
+  "description": "Codex-style OS sandbox for opencode shell commands: Seatbelt on macOS, bubblewrap on Linux, restricted-token sandbox on Windows",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "live:windows": "node scripts/live-windows.ts",
+    "clean": "node scripts/clean.ts"
+  },
+  "dependencies": {
+    "koffi": "^2.9.0"
+  },
+  "devDependencies": {
+    "@opencode/plugin": "2.3.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "allowScripts": {
+    "koffi@2.16.4": true
+  }
+}

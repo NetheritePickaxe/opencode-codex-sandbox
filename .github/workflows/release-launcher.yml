@@ -1,0 +1,139 @@
+name: release-launcher
+
+# Builds the standalone sandbox launcher for x64 + arm64 and attaches the raw
+# .exe files to a GitHub release. The plugin's runtime downloader
+# (src/binaries.ts ensureLauncher) fetches these via an `launcherUrl` template,
+# e.g. https://github.com/<owner>/<repo>/releases/latest/download/codex-sandbox-launcher-win32-{arch}.exe
+#
+# rust/vendor is generated (gitignored), so this regenerates it from upstream
+# before building.
+
+on:
+  push:
+    tags:
+      - "launcher-v*"
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Upstream codex rust-v* tag to vendor (defaults to rust/UPSTREAM_VERSION)"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve upstream tag
+        id: tag
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.upstream_tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="rust-v$(cat rust/UPSTREAM_VERSION)"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Sparse-checkout upstream crate closure
+        shell: bash
+        run: |
+          git clone --filter=blob:none --no-checkout --depth 1 \
+            --branch "${{ steps.tag.outputs.tag }}" \
+            https://github.com/openai/codex.git upstream
+          cd upstream
+          git sparse-checkout init --cone
+          git sparse-checkout set \
+            codex-rs/windows-sandbox-rs \
+            codex-rs/protocol \
+            codex-rs/utils/pty \
+            codex-rs/utils/absolute-path \
+            codex-rs/utils/path-uri \
+            codex-rs/utils/process \
+            codex-rs/utils/string \
+            codex-rs/utils/redacted-string \
+            codex-rs/utils/cargo-bin
+          git checkout
+          test -f codex-rs/Cargo.toml
+
+      - name: Regenerate vendored workspace
+        run: node scripts/sync-rust.ts upstream/codex-rs
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vendor
+          path: rust/vendor
+
+  build:
+    needs: prepare
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            triple: x86_64-pc-windows-msvc
+          - arch: arm64
+            triple: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: vendor
+          path: rust/vendor
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+
+      - name: Build launcher
+        working-directory: rust
+        run: cargo build --release --target ${{ matrix.triple }} -p codex-sandbox-launcher
+
+      - name: Stage asset
+        shell: bash
+        run: |
+          src="rust/target/${{ matrix.triple }}/release/codex-sandbox-launcher.exe"
+          mkdir -p dist
+          cp "$src" "dist/codex-sandbox-launcher-win32-${{ matrix.arch }}.exe"
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: launcher-win32-${{ matrix.arch }}
+          path: dist/codex-sandbox-launcher-win32-${{ matrix.arch }}.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME:-launcher-v$(date +%Y%m%d)}"
+          # Apache-2.0 binary redistribution requires shipping LICENSE + NOTICE.
+          cp LICENSE NOTICE dist/
+          gh release create "$tag" dist/*.exe dist/LICENSE dist/NOTICE \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "launcher $tag" \
+            --notes "Standalone codex Windows sandbox launcher. License: Apache-2.0 (see LICENSE/NOTICE)." \
+            || gh release upload "$tag" dist/*.exe dist/LICENSE dist/NOTICE --repo "$GITHUB_REPOSITORY" --clobber
+          echo "Assets published under tag '$tag'."

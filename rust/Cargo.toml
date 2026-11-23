@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = ["launcher", "vendor/*"]
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1

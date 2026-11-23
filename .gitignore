@@ -1,0 +1,6 @@
+node_modules/
+codex/
+rust/target/
+# Generated from upstream by scripts/sync-rust.ts; rebuilt in CI.
+rust/vendor/
+*.log
