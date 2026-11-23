@@ -299,6 +299,11 @@ function buildProtocolShim(): void {
 
   const models = fs.readFileSync(path.join(protoSrc, "models.rs"), "utf8").split(/\r?\n/)
   const modelsBlock = extractRange(models, "pub enum SandboxPermissions", "pub enum ResponseInputItem")
+  // Only some upstream revisions define this projection type; importing it
+  // unconditionally breaks older baselines (e.g. rust-v0.169.0).
+  const legacyProjectionImport = modelsBlock.includes("LegacySandboxPolicyProjection")
+    ? "use crate::permissions::LegacySandboxPolicyProjection;\n"
+    : ""
   write(
     "models.rs",
     `// Extracted from upstream protocol/src/models.rs (permission section only).
@@ -321,8 +326,7 @@ use crate::permissions::FileSystemSandboxEntry;
 use crate::permissions::FileSystemSandboxKind;
 use crate::permissions::FileSystemSandboxPolicy;
 use crate::permissions::FileSystemSpecialPath;
-use crate::permissions::LegacySandboxPolicyProjection;
-use crate::permissions::NetworkSandboxPolicy;
+${legacyProjectionImport}use crate::permissions::NetworkSandboxPolicy;
 use crate::permissions::RawFileSystemSandboxEntry;
 use crate::protocol::SandboxPolicy;
 
@@ -437,6 +441,40 @@ tempfile = "3.23.0"
 // --- stubs ------------------------------------------------------------------
 
 function buildStubs(): void {
+  // The stub OtelSettings must mirror exactly the fields the vendored WFP setup
+  // constructs, otherwise newer/older upstream revisions gain or drop fields
+  // and the struct literal stops compiling.
+  const OTEL_FIELD_TYPES: Record<string, string> = {
+    headers_helper: "Option<()>",
+    http_client_factory: "codex_http_client::HttpClientFactory",
+    environment: "String",
+    service_name: "String",
+    service_version: "String",
+    codex_home: "PathBuf",
+    exporter: "OtelExporter",
+    trace_exporter: "OtelExporter",
+    metrics_exporter: "OtelExporter",
+    runtime_metrics: "bool",
+    span_attributes: "HashMap<String, String>",
+    tracestate: "BTreeMap<String, String>",
+  }
+  const wfpSetup = fs.readFileSync(path.join(VENDOR, "codex-windows-sandbox", "src", "wfp_setup.rs"), "utf8")
+  const literalStart = wfpSetup.indexOf("OtelSettings {")
+  if (literalStart < 0) die("no OtelSettings construction in wfp_setup.rs")
+  const literalEnd = wfpSetup.indexOf("})", literalStart)
+  if (literalEnd < 0) die("unterminated OtelSettings construction in wfp_setup.rs")
+  const literal = wfpSetup.slice(literalStart, literalEnd)
+  const fields: string[] = []
+  for (const line of literal.split(/\r?\n/).slice(1)) {
+    const match = /^\s+(\w+):\s/.exec(line)
+    if (!match) continue
+    const type = OTEL_FIELD_TYPES[match[1]]
+    if (!type) die(`unknown OtelSettings field '${match[1]}'; extend OTEL_FIELD_TYPES in sync-rust.ts`)
+    fields.push(`    pub ${match[1]}: ${type},`)
+  }
+  if (fields.length === 0) die("no fields parsed from OtelSettings construction")
+  const otelFields = fields.join("\n")
+
   const otel = path.join(VENDOR, "codex-otel")
   fs.mkdirSync(path.join(otel, "src"), { recursive: true })
   fs.writeFileSync(
@@ -490,18 +528,7 @@ pub enum OtelExporter {
 }
 
 pub struct OtelSettings {
-    pub headers_helper: Option<()>,
-    pub http_client_factory: codex_http_client::HttpClientFactory,
-    pub environment: String,
-    pub service_name: String,
-    pub service_version: String,
-    pub codex_home: PathBuf,
-    pub exporter: OtelExporter,
-    pub trace_exporter: OtelExporter,
-    pub metrics_exporter: OtelExporter,
-    pub runtime_metrics: bool,
-    pub span_attributes: HashMap<String, String>,
-    pub tracestate: BTreeMap<String, String>,
+${otelFields}
 }
 
 pub struct OtelProvider;
