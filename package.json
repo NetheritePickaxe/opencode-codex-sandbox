@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Codex-style OS sandbox for opencode shell commands: Seatbelt on macOS, bubblewrap on Linux, restricted-token sandbox on Windows",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NetheritePickaxe/opencode-codex-sandbox.git"
+  },
   "type": "module",
   "main": "src/index.ts",
   "exports": {

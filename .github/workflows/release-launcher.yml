@@ -17,6 +17,9 @@ on:
       upstream_tag:
         description: "Upstream codex rust-v* tag to vendor (defaults to rust/UPSTREAM_VERSION)"
         required: false
+      release_tag:
+        description: "Release tag to publish (defaults to launcher-v<YYYYMMDD>)"
+        required: false
 
 permissions:
   contents: write
@@ -127,8 +130,15 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          tag="${GITHUB_REF_NAME:-launcher-v$(date +%Y%m%d)}"
+          # On a tag push use the tag itself; on workflow_dispatch GITHUB_REF_NAME
+          # is the branch, so fall back to the explicit input or a dated tag.
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="${INPUT_RELEASE_TAG:-launcher-v$(date +%Y%m%d)}"
+          fi
           # Apache-2.0 binary redistribution requires shipping LICENSE + NOTICE.
           cp LICENSE NOTICE dist/
           gh release create "$tag" dist/*.exe dist/LICENSE dist/NOTICE \
